@@ -44,3 +44,19 @@
 ![TODO](./images/screenshot_6.png?raw=true)
 
 <br />
+
+## Run
+
+Every push to `main` builds the image `ghcr.io/taharhidouani/pool-party` (tags `main` and `sha-<commit>`). The container listens on port 8080, answers `GET /healthz` and serves the React client and Socket.IO from the same origin, so it works under any path prefix.
+
+| Variable | Purpose |
+| --- | --- |
+| `MONGO_URL` | MongoDB connection string; data and sessions go to the database `pool-party` |
+| `SESSION_SECRET` | Random string that signs session cookies; without it sessions reset on every restart |
+| `PORT` | Listen port, default 8080 |
+
+```sh
+docker run -p 8080:8080 -e MONGO_URL=mongodb://user:pass@mongo:27017/pool-party?authSource=pool-party -e SESSION_SECRET=change-me ghcr.io/taharhidouani/pool-party:main
+```
+
+All data lives in MongoDB. Locally: `npm install` and `npm run build` in `client/`, then `npm install` and `npm start` in `server/`.

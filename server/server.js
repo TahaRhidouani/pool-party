@@ -10,10 +10,11 @@ const bcrypt = require("bcrypt");
 const { customAlphabet } = require("nanoid");
 const nanoid = customAlphabet("1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10);
 const path = require("path");
+const crypto = require("crypto");
 
 const PORT = process.env.PORT || 8080;
 
-const mongoURL = "mongodb://127.0.0.1:27017/";
+const mongoURL = process.env.MONGO_URL || "mongodb://127.0.0.1:27017/";
 const matchInfo = { 2: { wagerAmount: [5, 10, 25, 50, 100], resultTeaseRange: [30, 34], selectionPeriod: 15000, houseCommission: 0.05, playerReturn: 1.9 }, 3: { wagerAmount: [5, 10, 25, 50, 100], resultTeaseRange: [30, 34], selectionPeriod: 20000, houseCommission: 0.1, playerReturn: 2.7 }, 5: { wagerAmount: [3, 5, 10, 25, 50], resultTeaseRange: [30, 34], selectionPeriod: 25000, houseCommission: 0.15, playerReturn: 4.25 } };
 const colors = ["#d1361b", "#4169e1", "#32CD32", "#e8cc15", "#8a2be2"]; // Red, Blue, Green, Yellow, Purple
 
@@ -28,9 +29,14 @@ let mongoStore = new MongoDBStore({
   collection: "users-sessions",
 });
 
-const sessionMiddleware = session({ secret: "pool-party-secret-key", resave: true, saveUninitialized: true, store: mongoStore });
+const sessionMiddleware = session({ secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex"), resave: true, saveUninitialized: true, store: mongoStore, cookie: { secure: "auto", sameSite: "lax" } });
+
+app.set("trust proxy", true);
+
+app.get("/healthz", (req, res) => res.status(200).send("ok"));
 
 app.use(express.urlencoded({ extended: true }));
+app.use((req, res, next) => (database ? next() : res.status(503).send()));
 app.use(sessionMiddleware);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "../client/build")));
@@ -46,7 +52,9 @@ app.post("/login", async (req, res) => {
 });
 
 app.post("/register", async (req, res) => {
-  if (await userExists(req.body.username)) {
+  if (typeof req.body.username !== "string" || typeof req.body.email !== "string" || typeof req.body.password !== "string") {
+    res.status(400).send();
+  } else if (await userExists(req.body.username)) {
     res.status(400).send();
   } else if (await emailExists(req.body.email)) {
     res.status(401).send();
@@ -83,9 +91,16 @@ io.use(async (socket, next) => {
 io.on("connection", (socket) => {
   if (alreadyInGame(socket.request.session.username)) return socket.emit("already-ingame");
 
+  // Every client event carries an object payload, drop anything else
+  socket.use(([, data], next) => {
+    if (data !== null && typeof data === "object") next();
+  });
+
   socket.on("find-match", async (query) => {
     let gameCode;
     let foundGame = false;
+
+    if (query.gameCode == null && !validMatchSettings(query)) return;
 
     if (query.public) {
       if ((await getInformation(socket.request.session.username, socket.request.session.password)).credits < query.wagerAmount) return socket.emit("insufficient-funds");
@@ -166,7 +181,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on("unselect-square", (data) => {
-      if (allGamesData[gameCode]?.selectionPeriod) {
+      if (allGamesData[gameCode]?.selectionPeriod && allGamesData[gameCode].picks[data.squareNumber]?.username === socket.request.session.username) {
         delete allGamesData[gameCode].picks[data.squareNumber];
         allGamesData[gameCode].players[socket.request.session.username].picksLeft++;
         io.sockets.to(gameCode).emit("square-status", { picks: allGamesData[gameCode].picks });
@@ -196,14 +211,14 @@ io.on("connection", (socket) => {
   });
 });
 
+http.listen(PORT, () => {
+  console.log("listening on port " + PORT);
+});
+
 MongoClient.connect(mongoURL, function (err, client) {
   if (err) throw err;
 
   database = client.db("pool-party");
-
-  http.listen(PORT, () => {
-    console.log("listening on port " + PORT);
-  });
 });
 
 async function playGame(roomID, playerNum, wagerAmt) {
@@ -294,8 +309,12 @@ async function emailExists(email) {
   return (await database.collection("users").findOne({ email: email })) ? true : false;
 }
 
+function validMatchSettings(query) {
+  return Object.hasOwn(matchmakingData, query.playerAmount) && Object.hasOwn(matchmakingData[query.playerAmount], query.wagerAmount);
+}
+
 async function validCredentials(username, password) {
-  if (username == undefined || password == undefined) return false;
+  if (typeof username !== "string" || typeof password !== "string" || !database) return false;
   let pwd = await database.collection("users").findOne({ username: username });
   return pwd && (await bcrypt.compare(password, pwd.password));
 }

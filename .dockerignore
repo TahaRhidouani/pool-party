@@ -1,0 +1,10 @@
+.git
+.github
+.dockerignore
+Dockerfile
+README.md
+images
+**/node_modules
+**/.env*
+**/.DS_Store
+client/build
