@@ -8,7 +8,7 @@ function Home(props) {
       </div>
 
       <div className="centered_menu_nav">
-        <img id="logo" src="logo.png" />
+        <img id="logo" src="logo.webp" />
         <div className="button_menu">
           <button onClick={() => props.handleClick("matchmaking-public")}>Start Game</button>
           <button onClick={() => props.handleClick("matchmaking-private")}>Private Game</button>

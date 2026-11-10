@@ -29,17 +29,24 @@ let mongoStore = new MongoDBStore({
   collection: "users-sessions",
 });
 
-const sessionMiddleware = session({ secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex"), resave: true, saveUninitialized: true, store: mongoStore, cookie: { secure: "auto", sameSite: "lax" } });
+// The store has no touch(), which resave: false relies on to keep a used session from expiring
+mongoStore.touch = function (id, session, callback) {
+  const expires = session.cookie && session.cookie.expires ? new Date(session.cookie.expires) : new Date(Date.now() + this.options.expires);
+  if (!this.db) return callback();
+  this.db.collection(this.options.collection).updateOne(this._generateQuery(id), { $set: { [this.options.expiresKey]: expires } }, (error) => callback(error));
+};
+
+const sessionMiddleware = session({ secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex"), resave: false, saveUninitialized: false, store: mongoStore, cookie: { secure: "auto", sameSite: "lax" } });
 
 app.set("trust proxy", true);
 
 app.get("/healthz", (req, res) => res.status(200).send("ok"));
 
+app.use(express.static(path.join(__dirname, "../client/build")));
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => (database ? next() : res.status(503).send()));
 app.use(sessionMiddleware);
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "../client/build")));
 
 app.post("/login", async (req, res) => {
   if (await validCredentials(req.body.username, req.body.password)) {
@@ -59,7 +66,7 @@ app.post("/register", async (req, res) => {
   } else if (await emailExists(req.body.email)) {
     res.status(401).send();
   } else {
-    database.collection("users").insertOne({ username: req.body.username, email: req.body.email, password: await bcrypt.hash(req.body.password, 10), credits: 2000 });
+    await database.collection("users").insertOne({ username: req.body.username, email: req.body.email, password: await bcrypt.hash(req.body.password, 10), credits: 2000 });
     req.session.username = req.body.username;
     req.session.password = req.body.password;
     res.status(200).send();

@@ -4,7 +4,7 @@ function End(props) {
       <>
         <div className="centered_menu">
           <div id="setting_menu">
-            <img id="logo" src="logo.png" />
+            <img id="logo" src="logo.webp" />
             <br />
             <hr style={{ width: "100%" }} />
             <br />
@@ -29,7 +29,7 @@ function End(props) {
       <>
         <div className="centered_menu">
           <div id="setting_menu">
-            <img id="logo" src="logo.png" />
+            <img id="logo" src="logo.webp" />
             <br />
             <hr style={{ width: "100%" }} />
             <br />
