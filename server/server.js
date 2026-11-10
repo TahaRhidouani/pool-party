@@ -48,17 +48,15 @@ app.use((req, res, next) => (database ? next() : res.status(503).send()));
 app.use(sessionMiddleware);
 app.use(express.json());
 
-app.post("/login", async (req, res) => {
+app.post("/login", async (req, res, next) => {
   if (await validCredentials(req.body.username, req.body.password)) {
-    req.session.username = req.body.username;
-    req.session.password = req.body.password;
-    res.status(200).send();
+    signIn(req, req.body.username, (err) => (err ? next(err) : res.status(200).send()));
   } else {
     res.status(401).send();
   }
 });
 
-app.post("/register", async (req, res) => {
+app.post("/register", async (req, res, next) => {
   if (typeof req.body.username !== "string" || typeof req.body.email !== "string" || typeof req.body.password !== "string") {
     res.status(400).send();
   } else if (await userExists(req.body.username)) {
@@ -67,19 +65,20 @@ app.post("/register", async (req, res) => {
     res.status(401).send();
   } else {
     await database.collection("users").insertOne({ username: req.body.username, email: req.body.email, password: await bcrypt.hash(req.body.password, 10), credits: 2000 });
-    req.session.username = req.body.username;
-    req.session.password = req.body.password;
-    res.status(200).send();
+    signIn(req, req.body.username, (err) => (err ? next(err) : res.status(200).send()));
   }
 });
 
-app.post("/logout", (req, res) => {
-  req.session.username = undefined;
-  req.session.password = undefined;
-  res.status(200).send();
+app.post("/logout", (req, res, next) => {
+  // End the session and drop its cookie, so the old session ID no longer works
+  req.session.destroy((err) => {
+    if (err) return next(err);
+    res.clearCookie("connect.sid");
+    res.status(200).send();
+  });
 });
 
-app.get("/user", async (req, res) => res.status(200).send(await getInformation(req.session.username, req.session.password)));
+app.get("/user", async (req, res) => res.status(200).send(await getInformation(req.session.username)));
 
 // Get express session coookies
 io.use((socket, next) => {
@@ -88,7 +87,7 @@ io.use((socket, next) => {
 
 // Check if user is authenticated
 io.use(async (socket, next) => {
-  if (await validCredentials(socket.request.session.username, socket.request.session.password)) {
+  if (await getInformation(socket.request.session.username)) {
     next();
   } else {
     next(new Error("Authentication error"));
@@ -110,7 +109,7 @@ io.on("connection", (socket) => {
     if (query.gameCode == null && !validMatchSettings(query)) return;
 
     if (query.public) {
-      if ((await getInformation(socket.request.session.username, socket.request.session.password)).credits < query.wagerAmount) return socket.emit("insufficient-funds");
+      if ((await getInformation(socket.request.session.username)).credits < query.wagerAmount) return socket.emit("insufficient-funds");
 
       let matchQuery = matchmakingData[query.playerAmount][query.wagerAmount];
 
@@ -147,7 +146,7 @@ io.on("connection", (socket) => {
                 foundGame = true;
                 let matchQuery = matchmakingData[playerSetting][wagerSetting][gameID];
 
-                if ((await getInformation(socket.request.session.username, socket.request.session.password)).credits < query.wagerAmount) return socket.emit("insufficient-funds");
+                if ((await getInformation(socket.request.session.username)).credits < query.wagerAmount) return socket.emit("insufficient-funds");
 
                 socket.emit("game-settings", { playerAmount: parseInt(playerSetting), wagerAmount: parseInt(wagerSetting), gameCreator: matchQuery.playerList[0] });
 
@@ -169,7 +168,7 @@ io.on("connection", (socket) => {
 
         if (!foundGame) socket.emit("incorrect-gamecode");
       } else {
-        if ((await getInformation(socket.request.session.username, socket.request.session.password)).credits < query.wagerAmount) return socket.emit("insufficient-funds");
+        if ((await getInformation(socket.request.session.username)).credits < query.wagerAmount) return socket.emit("insufficient-funds");
 
         gameCode = generateGameCode();
         matchmakingData[query.playerAmount][query.wagerAmount][gameCode] = { type: "private", playerList: [socket.request.session.username], playerAmount: query.playerAmount, wagerAmount: query.wagerAmount };
@@ -222,10 +221,14 @@ http.listen(PORT, () => {
   console.log("listening on port " + PORT);
 });
 
-MongoClient.connect(mongoURL, function (err, client) {
+MongoClient.connect(mongoURL, async function (err, client) {
   if (err) throw err;
 
-  database = client.db("pool-party");
+  // Sessions from before held the password itself: delete them before serving requests
+  const db = client.db("pool-party");
+  const { deletedCount } = await db.collection("users-sessions").deleteMany({ "session.password": { $exists: true } });
+  if (deletedCount) console.log(`Deleted ${deletedCount} sessions that held a password`);
+  database = db;
 });
 
 async function playGame(roomID, playerNum, wagerAmt) {
@@ -326,9 +329,19 @@ async function validCredentials(username, password) {
   return pwd && (await bcrypt.compare(password, pwd.password));
 }
 
-async function getInformation(username, password) {
-  if (await validCredentials(username, password)) return await database.collection("users").findOne({ username: username }, { projection: { _id: 0, password: 0 } });
-  return false;
+// The signed-in user's details without the password hash, or false
+async function getInformation(username) {
+  if (typeof username !== "string" || !database) return false;
+  return (await database.collection("users").findOne({ username: username }, { projection: { _id: 0, password: 0 } })) || false;
+}
+
+// Give the signed-in user a new session ID (against session fixation) that holds only the username
+function signIn(req, username, callback) {
+  req.session.regenerate((err) => {
+    if (err) return callback(err);
+    req.session.username = username;
+    req.session.save(callback);
+  });
 }
 
 function generateGameCode() {
